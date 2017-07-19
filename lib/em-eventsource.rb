@@ -1,5 +1,7 @@
 # encoding: utf-8
 
+# Adapted from original source at https://github.com/AF83/em-eventsource
+
 require "eventmachine"
 require "em-http-request"
 
@@ -113,11 +115,12 @@ module EventMachine
       @conn, @req = prepare_request
       @req.headers(&method(:handle_headers))
       @req.errback(&method(:handle_reconnect))
-      @req.callback(&method(:handle_reconnect))
+      #@req.callback(&method(:handle_reconnect))
       buffer = ""
       @req.stream do |chunk|
         buffer += chunk
-        while index = buffer.index(/\r\n\r\n|\n\n/)
+        # TODO: manage \r, \r\n, \n
+        while index = buffer.index("\n\n")
           stream = buffer.slice!(0..index)
           handle_stream(stream)
         end
@@ -134,7 +137,13 @@ module EventMachine
     end
 
     def handle_headers(headers)
-      if headers.status != 200
+      if headers.status == 307
+        new_url = headers['LOCATION']
+        close
+        @url = new_url
+        start
+        return
+      elsif headers.status != 200
         close
         @errors.each { |error| error.call("Unexpected response status #{headers.status}") }
         return
@@ -151,7 +160,7 @@ module EventMachine
     def handle_stream(stream)
       data = ""
       name = nil
-      stream.split(/\r?\n/).each do |part|
+      stream.split("\n").each do |part|
         /^data:(.+)$/.match(part) do |m|
           data += m[1].strip
           data += "\n"
@@ -169,7 +178,7 @@ module EventMachine
         end
       end
       return if data.empty?
-      data.chomp!
+      data.chomp!("\n")
       if name.nil?
         @messages.each { |message| message.call(data) }
       else
@@ -181,7 +190,7 @@ module EventMachine
       conn = EM::HttpRequest.new(@url, :inactivity_timeout => @inactivity_timeout)
       @middlewares.each { |middleware|
         block = middleware.pop
-        conn.use(*middleware, &block)
+        conn.use *middleware, &block
       }
       headers = @headers.merge({'Cache-Control' => 'no-cache', 'Accept' => 'text/event-stream'})
       headers.merge!({'Last-Event-Id' => @last_event_id }) if not @last_event_id.nil?
